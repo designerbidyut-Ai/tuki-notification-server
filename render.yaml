@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: tuki-notification-worker
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node worker.js
+    envVars:
+      - key: FIREBASE_DATABASE_URL
+        value: https://livelocation-afb04-default-rtdb.asia-southeast1.firebasedatabase.app
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false

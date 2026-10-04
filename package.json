@@ -1,0 +1,17 @@
+{
+  "name": "tuki-notification-worker",
+  "version": "1.0.0",
+  "description": "Zero-cost real-time push notification and follower sync worker for Tuki",
+  "main": "worker.js",
+  "scripts": {
+    "start": "node worker.js",
+    "test": "node --test test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "firebase-admin": "^13.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
