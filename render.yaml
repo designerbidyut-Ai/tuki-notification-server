@@ -4,8 +4,9 @@ services:
     runtime: node
     plan: free
     rootDir: server
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: node worker.js
+    healthCheckPath: /health
     envVars:
       - key: FIREBASE_DATABASE_URL
         value: https://livelocation-afb04-default-rtdb.asia-southeast1.firebasedatabase.app

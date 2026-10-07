@@ -1,11 +1,11 @@
 {
   "name": "tuki-notification-worker",
   "version": "1.0.0",
-  "description": "Zero-cost real-time push notification and follower sync worker for Tuki",
+  "description": "Real-time chat, friend request and SOS push notification worker for Tuki",
   "main": "worker.js",
   "scripts": {
     "start": "node worker.js",
-    "test": "node --test test.js"
+    "test": "node --test test.cjs"
   },
   "dependencies": {
     "express": "^4.21.2",

@@ -1,50 +1,35 @@
-# Tuki Free Real-Time Notification & Follower Worker
+# Tuki notification worker
 
-A zero-cost, lightweight standalone Node.js worker service that listens to Firebase Realtime Database events and dispatches high-importance Firebase Cloud Messaging (FCM) push notifications directly to users' phones.
+This trusted Node service listens to Firebase Realtime Database and sends FCM notifications for new chats, friend requests and SOS events. It preserves the existing service's follower mirror. It uses the existing Firebase project; it does not enable Firebase billing or deploy Cloud Functions. It must remain running and connected for background push delivery.
 
-## Features
-- **Zero Cost ($0)**: Runs on Render.com's 100% Free Tier (no credit card required).
-- **Real-Time Push Notifications**:
-  - Instant chat alerts on Android channel `tuki-messages-v1` with sound and vibration.
-  - Friend request alerts.
-  - Automatically suppresses alerts for blocked users or users who toggled notifications off.
-  - Cleans up stale/unregistered device tokens automatically.
-- **Followers Synchronization**: Synchronizes `/following` to `/followers` automatically.
-- **Health Check**: Provides `GET /health` and `GET /` endpoints to ensure 24/7 liveness.
+## Delivery behavior
 
----
+- Watches recipient copies of every new message, including the first conversation and rapid messages.
+- Uses the sender's profile name, message text, sound and vibration. SOS uses `tuki-sos-v1`; messages and friend requests use `tuki-messages-v1`.
+- Rechecks blocks, deletion, read messages, cancelled requests and current SOS episodes before sending. SOS recipients must be mutual friends.
+- Uses durable per-event leases and per-token acknowledgements. Retries transient failures without resending successful tokens and removes invalid tokens without deleting a refreshed replacement.
+- On startup, considers only the last minute of events. Older history is not pushed to people. Events during a longer service outage will not be recovered as alerts.
+- The app can wake this free host after saving a direct message via authenticated `POST /message-wake`. The server verifies the Firebase ID token and fetches that sender's recipient-side message; client-provided text or sender IDs are never trusted. Only messages from the last five minutes qualify. This explicitly recovers a message after a cold start without replaying unrelated history. The normal dispatcher still checks blocks/read/deletion state and deduplicates delivery. The app retries once without blocking message sending.
+- `GET /` and `GET /health` expose database connection status and aggregate counters, without tokens, private messages or account IDs. Health returns 503 while disconnected; the root response includes the repair version.
 
-## Deploying to Render.com (100% Free, No Credit Card)
+Android requires notification permission and enabled notification channels. Device silent mode, channel sound settings, force-stop and battery restrictions can affect alerts. Build 8 can display local foreground system alerts plus a native app banner; Build 6's installed native dependencies permit an in-app foreground banner and background FCM, but adding foreground system notification support requires a new APK/AAB.
 
-### Step 1: Sign Up / Log In
-1. Go to [https://render.com](https://render.com).
-2. Sign in with GitHub or your Google Account (no credit card needed).
+## Run locally
 
-### Step 2: Create a Web Service
-1. Click **New +** > **Web Service**.
-2. Connect your GitHub repository (or select **Public Git repository** if your repo is public).
-3. Set the following settings:
-   - **Name**: `tuki-notification-worker`
-   - **Region**: Singapore (`Singapore (Southeast Asia)`) or Frankfurt/Oregon.
-   - **Branch**: `master`
-   - **Root Directory**: `server`
-   - **Runtime**: `Node`
-   - **Build Command**: `npm install`
-   - **Start Command**: `node worker.js`
-   - **Instance Type**: `Free` ($0/month)
+Install dependencies in `server`, then run `node scripts/run-notification-worker.cjs` from the project root. The worker reads `FIREBASE_SERVICE_ACCOUNT` (JSON supplied through a secret environment variable) or the existing local `.secrets/firebase-service-account.json`. Never commit or print that credential.
 
-### Step 3: Add Environment Variables
-Under the **Environment Variables** section, add:
-1. `FIREBASE_DATABASE_URL`:
-   ```
-   https://livelocation-afb04-default-rtdb.asia-southeast1.firebasedatabase.app
-   ```
-2. `FIREBASE_SERVICE_ACCOUNT`:
-   Run this command locally to get the string:
-   ```powershell
-   node server/get-render-secret.cjs
-   ```
-   Paste the generated string into the value box.
+Optional environment variables:
 
-### Step 4: Click "Deploy Web Service"
-That's it! Render will build and run your service within 60 seconds. Your notifications will be live 24/7!
+- `FIREBASE_DATABASE_URL`: the existing project's Realtime Database URL.
+- `TUKI_WORKER_PORT` / `PORT`: HTTP port, default `3000`.
+- `TUKI_WORKER_HOST`: listener address, default `0.0.0.0`. Use `127.0.0.1` locally.
+
+The repair session temporarily started a hidden local worker on `127.0.0.1:3090`, then stopped it after discovering the existing Render sender to avoid duplicate delivery. Logs are in `release/notification-repair-2026-10-06/worker.stdout.log` and `worker.stderr.log`. The corrected cloud worker still needs deployment to the existing Render service.
+
+Run server regression tests with `npm test` from `server`. `node scripts/audit-notifications.cjs --all` validates registered tokens with FCM dry-run and never sends a test notification. `--prune` additionally removes only tokens that FCM reports as invalid.
+
+## Hosting
+
+For an existing Render service, use root directory `server`, build command `npm ci`, start command `node worker.js`, the existing database URL and a protected `FIREBASE_SERVICE_ACCOUNT` environment variable. Do not copy the credential into logs or release receipts.
+
+Render's free web services spin down when idle and can restart. A health endpoint does not itself provide 24/7 operation. Free hosting therefore cannot guarantee continuous SOS or background notifications. See [Render free service limits](https://render.com/docs/free). No paid plan or cloud deployment was enabled by this repair.
