@@ -32,4 +32,6 @@ Run server regression tests with `npm test` from `server`. `node scripts/audit-n
 
 For an existing Render service, use root directory `server`, build command `npm ci`, start command `node worker.js`, the existing database URL and a protected `FIREBASE_SERVICE_ACCOUNT` environment variable. Do not copy the credential into logs or release receipts.
 
-Render's free web services spin down when idle and can restart. A health endpoint does not itself provide 24/7 operation. Free hosting therefore cannot guarantee continuous SOS or background notifications. See [Render free service limits](https://render.com/docs/free). No paid plan or cloud deployment was enabled by this repair.
+Render's free web services spin down when idle and can restart. A health endpoint does not itself provide 24/7 operation. Free hosting therefore cannot guarantee continuous SOS or background notifications. See [Render free service limits](https://render.com/docs/free). No paid plan was enabled.
+
+7 October 2026: the corrected worker was deployed to the existing free Render service (`notification-avatar-2026-10-07`). Its root and health endpoints confirmed the expected version and Firebase connection. The sender's profile photo (avatarUrl) is included in FCM notification and android payloads so recipient phones display the sender picture directly in the notification drawer/bar and in-app alerts. Historical undeployed notes above describe the earlier repair session.

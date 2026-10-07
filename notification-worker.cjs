@@ -20,7 +20,7 @@ let connected=false;
 const connection=database.ref('.info/connected'),onConnection=snapshot=>{connected=snapshot.val()===true;};
 connection.on('value',onConnection,fail);
 const app=express(),startedAt=new Date().toISOString();
-app.get('/',(_req,res)=>res.json({service:'tuki-notification-worker',version:'notification-wake-2026-10-07',status:connected?'online':'disconnected',connected,startedAt,stats:worker.stats,pending:worker.pendingCount()}));
+app.get('/',(_req,res)=>res.json({service:'tuki-notification-worker',version:'notification-avatar-2026-10-07',status:connected?'online':'disconnected',connected,startedAt,stats:worker.stats,pending:worker.pendingCount()}));
 app.get('/health',(_req,res)=>res.status(connected?200:503).json({status:connected?'online':'disconnected',connected,pending:worker.pendingCount(),errors:worker.stats.errors}));
 app.post('/message-wake',express.json({limit:'2kb'}),createMessageWake({auth:admin.auth(),db:database,worker}));
 const server=app.listen(Number(process.env.TUKI_WORKER_PORT||process.env.PORT||3000),process.env.TUKI_WORKER_HOST||'0.0.0.0',()=>console.log('Tuki notification worker running; chat, friend requests and SOS enabled.'));

@@ -58,6 +58,15 @@ test('message carries name, sound, vibration and stable message identity; restar
  const s=setup();await s.dispatcher.deliver(s.event);await createNotificationDispatcher({db:s.db,messaging:s.messaging,now:()=>s.time}).deliver(s.event);
  assert.equal(s.sent.length,1);assert.equal(s.sent[0].notification.title,'Alice');assert.equal(s.sent[0].data.messageId,'m1');assert.equal(s.sent[0].android.notification.sound,'default');assert.deepEqual(s.sent[0].android.notification.vibrateTimingsMillis,[0,160,100,160]);
 });
+test('sender profile photo is included in notification image and data payloads when present',async()=>{
+ const s=setup({'profiles/alice':{name:'Alice',avatarUrl:'https://example.com/alice.jpg'}});
+ await s.dispatcher.deliver(s.event);
+ assert.equal(s.sent.length,1);
+ assert.equal(s.sent[0].notification.imageUrl,'https://example.com/alice.jpg');
+ assert.equal(s.sent[0].android.notification.imageUrl,'https://example.com/alice.jpg');
+ assert.equal(s.sent[0].data.avatarUrl,'https://example.com/alice.jpg');
+ assert.equal(s.sent[0].apns.fcmOptions.imageUrl,'https://example.com/alice.jpg');
+});
 test('transient token failure retries only failed devices',async()=>{
  const s=setup({'pushTokens/bob':{one:'good',two:'temporary'}});let first=true;
  s.setRespond(payload=>({responses:payload.tokens.map(t=>first&&t==='temporary'?{success:false,error:{code:'messaging/internal-error'}}:{success:true})}));

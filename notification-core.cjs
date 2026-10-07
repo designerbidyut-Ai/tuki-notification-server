@@ -26,22 +26,26 @@ function createNotificationDispatcher({db,messaging,now=Date.now}){
   const acquired=await lease.transaction(current=>current&&current.until>now()?undefined:{owner,until:now()+60000});
   if(!acquired.committed)return {status:'busy',sent:0};
   try{
-   const [saved,devices,profile]=await Promise.all([delivery.child('tokens').get(),db.ref('pushTokens/'+event.recipient).get(),db.ref('profiles/'+event.sender+'/name').get()]);
+   const [saved,devices,profile]=await Promise.all([delivery.child('tokens').get(),db.ref('pushTokens/'+event.recipient).get(),db.ref('profiles/'+event.sender).get()]);
    const completed=saved.val()||{},tokens=devices.val()||{};
    const entries=Object.entries(tokens).filter(([,t])=>typeof t==='string'&&!completed[hash(t)]);
    if(!Object.keys(tokens).length)return {status:'no-tokens',sent:0};
    if(!entries.length)return {status:'done',sent:0};
-   const name=String(profile.val()||'Your friend').trim().slice(0,80)||'Your friend';
+   const pVal=profile.val()||{};
+   const rawName=typeof pVal==='string'?pVal:(pVal.name||'Your friend');
+   const name=String(rawName||'Your friend').trim().slice(0,80)||'Your friend';
+   const avatarUrl=typeof pVal.avatarUrl==='string'&&/^https?:\/\//i.test(pVal.avatarUrl)?pVal.avatarUrl:'';
    const title=event.type==='emergency'?'SOS · '+name:event.type==='friend'?'Friend request · '+name:name;
    const body=event.type==='emergency'?name+' needs help. Tap to view their location.':event.type==='friend'?name+' wants to connect with you on Tuki.':String(event.text||'New message').slice(0,160);
    const data={type:event.type,senderId:event.sender,eventId:key};
    if(event.type==='message'){data.messageId=event.id;data.createdAt=String(event.createdAt);}
    if(event.type==='emergency')data.startedAt=String(event.startedAt);
+   if(avatarUrl)data.avatarUrl=avatarUrl;
    let sent=0,retry=false;
    for(let i=0;i<entries.length;i+=500){
     if(!await allowed(event))return {status:'suppressed',sent};
     const batch=entries.slice(i,i+500);
-    const result=await messaging.sendEachForMulticast({tokens:batch.map(([,t])=>t),notification:{title,body},data,android:{priority:'high',ttl:event.type==='emergency'?300000:3600000,notification:{channelId:event.type==='emergency'?'tuki-sos-v1':'tuki-messages-v1',tag:key,sound:'default',priority:'max',vibrateTimingsMillis:event.type==='emergency'?[0,500,200,500,200,500]:[0,160,100,160]}},apns:{payload:{aps:{sound:'default'}}}});
+    const result=await messaging.sendEachForMulticast({tokens:batch.map(([,t])=>t),notification:{title,body,...(avatarUrl?{imageUrl:avatarUrl}:{})},data,android:{priority:'high',ttl:event.type==='emergency'?300000:3600000,notification:{channelId:event.type==='emergency'?'tuki-sos-v1':'tuki-messages-v1',tag:key,sound:'default',priority:'max',vibrateTimingsMillis:event.type==='emergency'?[0,500,200,500,200,500]:[0,160,100,160],...(avatarUrl?{imageUrl:avatarUrl}:{})}},apns:{payload:{aps:{sound:'default'}},...(avatarUrl?{fcmOptions:{imageUrl:avatarUrl}}:{})}});
     const acknowledged={};
     for(let j=0;j<batch.length;j++){
      const response=result.responses[j],[device,token]=batch[j],code=response.error?.code;
