@@ -2,7 +2,7 @@ const {test}=require('node:test'),assert=require('node:assert/strict');
 const {createNotificationDispatcher,createNotificationWorker}=require('./notification-core.cjs');
 const clone=v=>v==null?v:JSON.parse(JSON.stringify(v));
 function fakeDatabase(initial={}){
- const data=new Map(Object.entries(initial)),listeners=new Map();
+ const data=new Map(Object.entries(initial)),listeners=new Map(),reads=[];
  function value(path){
   let result=null;
   for(const [key,val]of [...data].sort((a,b)=>a[0].length-b[0].length)){
@@ -13,15 +13,31 @@ function fakeDatabase(initial={}){
  }
  const snap=(path,val,key=path.split('/').at(-1))=>({key,val:()=>clone(val),exists:()=>val!=null});
  function ref(path){return {
-  child:s=>ref(path+'/'+s),get:async()=>snap(path,value(path)),limitToLast:()=>ref(path),set:async val=>data.set(path,val),remove:async()=>data.set(path,null),
+  child:s=>ref(path+'/'+s),get:async()=>{reads.push(path);return snap(path,value(path));},limitToLast:()=>ref(path),set:async val=>data.set(path,val),remove:async()=>data.set(path,null),
   update:async fields=>{for(const[k,v]of Object.entries(fields))data.set(path+'/'+k,v);},
   transaction:async fn=>{const next=fn(value(path));if(next===undefined)return {committed:false};data.set(path,next);return {committed:true,snapshot:snap(path,next)};},
   on(event,callback){const key=path+':'+event;const list=listeners.get(key)||[];list.push(callback);listeners.set(key,list);queueMicrotask(()=>{if(!list.includes(callback))return;const val=value(path);if(event==='value')callback(snap(path,val));else if(event==='child_added')for(const[k,v]of Object.entries(val||{}))callback(snap(path,v,k));});},
   off(event,callback){const list=listeners.get(path+':'+event)||[];const i=list.indexOf(callback);if(i>=0)list.splice(i,1);},
  };}
- return {ref,value,set:(path,val)=>data.set(path,val),emit(path,event,val,key){if(event==='value')data.set(path,val);for(const fn of listeners.get(path+':'+event)||[])fn(snap(path,val,key));}};
+ return {ref,value,reads,set:(path,val)=>data.set(path,val),emit(path,event,val,key){if(event==='value')data.set(path,val);for(const fn of listeners.get(path+':'+event)||[])fn(snap(path,val,key));}};
 }
 const settle=async()=>{for(let i=0;i<20;i++)await new Promise(setImmediate);};
+test('follower changes use the durable per-owner index instead of repeated global downloads',async()=>{
+ const db=fakeDatabase({following:{alice:{bob:true}},followers:{bob:{alice:true}}});
+ let stop=require('./followers-sync.cjs').startFollowersSync({db,onError:e=>{throw e;}});await settle();
+ assert.equal(db.reads.filter(p=>p==='followers').length,1);
+ for(let i=0;i<50;i++){db.emit('following','child_changed',{bob:true},'alice');await settle();}
+ assert.equal(db.reads.filter(p=>p==='followers').length,1);assert.equal(db.value('followerSyncState/alice').version,1);stop();
+ stop=require('./followers-sync.cjs').startFollowersSync({db,onError:e=>{throw e;}});await settle();assert.equal(db.reads.filter(p=>p==='followers').length,1);stop();
+});
+test('notification retries reuse small sender fields and never read the legacy cover',async()=>{
+ const s=setup();s.db.set('profiles/alice/coverUrl','data:image/jpeg;base64,'+'A'.repeat(200000));
+ const worker=createNotificationDispatcher({db:s.db,messaging:s.messaging,now:()=>s.time});
+ await worker.deliver({type:'message',recipient:'bob',sender:'alice',id:'m1',text:'Hello',createdAt:s.time});
+ s.db.set('messages/bob/alice/m2',{senderId:'alice',text:'Second',createdAt:s.time});
+ await worker.deliver({type:'message',recipient:'bob',sender:'alice',id:'m2',text:'Second',createdAt:s.time});
+ assert.equal(s.sent.length,2);assert.equal(s.db.reads.filter(p=>p==='profiles/alice/name').length,1);assert.equal(s.db.reads.filter(p=>p==='profiles/alice/avatarUrl').length,1);assert.ok(!s.db.reads.includes('profiles/alice'));
+});
 test('authenticated wake recovers a cold-start message, deduplicates, and rejects forged or old references',async()=>{
  const s=setup(),worker=createNotificationWorker({db:s.db,messaging:s.messaging,now:()=>s.time+90000});
  const handler=require('./message-wake.cjs').createMessageWake({auth:{verifyIdToken:async token=>{if(token!=='valid')throw Error('invalid');return{uid:'alice'};}},db:s.db,worker,now:()=>s.time+90000});

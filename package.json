@@ -5,7 +5,7 @@
   "main": "worker.js",
   "scripts": {
     "start": "node worker.js",
-    "test": "node --test test.cjs"
+    "test": "node --test test.cjs world-features.test.cjs"
   },
   "dependencies": {
     "express": "^4.21.2",

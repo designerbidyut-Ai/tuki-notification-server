@@ -2,6 +2,16 @@ const {createHash,randomUUID}=require('node:crypto');
 const hash=value=>createHash('sha256').update(value).digest('hex');
 
 function createNotificationDispatcher({db,messaging,now=Date.now}){
+ const profiles=new Map(),pendingProfiles=new Map();
+ async function senderProfile(id){
+  const cached=profiles.get(id);if(cached&&now()-cached.at<60000)return cached.value;
+  if(pendingProfiles.has(id))return pendingProfiles.get(id);
+  const request=Promise.all([db.ref('profiles/'+id+'/name').get(),db.ref('profiles/'+id+'/avatarUrl').get()]).then(([name,photo])=>{
+   const value={name:String(name.val()||'Your friend').slice(0,80),avatarUrl:typeof photo.val()==='string'&&photo.val().length<=2048&&/^https:\/\//i.test(photo.val())?photo.val():''};
+   profiles.delete(id);profiles.set(id,{at:now(),value});while(profiles.size>256)profiles.delete(profiles.keys().next().value);return value;
+  }).finally(()=>pendingProfiles.delete(id));pendingProfiles.set(id,request);return request;
+ }
+
  async function allowed(event){
   const {recipient,sender,type,createdAt,startedAt}=event;
   if(!recipient||!sender||recipient===sender)return false;
@@ -26,12 +36,12 @@ function createNotificationDispatcher({db,messaging,now=Date.now}){
   const acquired=await lease.transaction(current=>current&&current.until>now()?undefined:{owner,until:now()+60000});
   if(!acquired.committed)return {status:'busy',sent:0};
   try{
-   const [saved,devices,profile]=await Promise.all([delivery.child('tokens').get(),db.ref('pushTokens/'+event.recipient).get(),db.ref('profiles/'+event.sender).get()]);
+   const [saved,devices,profile]=await Promise.all([delivery.child('tokens').get(),db.ref('pushTokens/'+event.recipient).get(),senderProfile(event.sender)]);
    const completed=saved.val()||{},tokens=devices.val()||{};
    const entries=Object.entries(tokens).filter(([,t])=>typeof t==='string'&&!completed[hash(t)]);
    if(!Object.keys(tokens).length)return {status:'no-tokens',sent:0};
    if(!entries.length)return {status:'done',sent:0};
-   const pVal=profile.val()||{};
+   const pVal=profile||{};
    const rawName=typeof pVal==='string'?pVal:(pVal.name||'Your friend');
    const name=String(rawName||'Your friend').trim().slice(0,80)||'Your friend';
    const avatarUrl=typeof pVal.avatarUrl==='string'&&/^https?:\/\//i.test(pVal.avatarUrl)?pVal.avatarUrl:'';
@@ -63,13 +73,14 @@ function createNotificationDispatcher({db,messaging,now=Date.now}){
  return {deliver};
 }
 
-function createNotificationWorker({db,messaging,now=Date.now,onError=()=>{},retryMs=5000}){
+function createNotificationWorker({db,messaging,now=Date.now,onError=()=>{},retryMs=5000,threadIndex}){
  const dispatcher=createNotificationDispatcher({db,messaging,now}),boot=now();
  const jobs=new Map(),timers=new Set(),offs=[],owners=new Map(),requestOffs=new Map();let closed=false;
  const stats={messagesProcessed:0,friendRequestsProcessed:0,sosProcessed:0,notificationsSent:0,errors:0,noTokenEvents:0};
  function enqueue(event){
   const id=[event.type,event.recipient,event.sender,event.id].join(':');if(closed||jobs.has(id))return;
   jobs.set(id,true);
+  if(threadIndex&&event.type==='message')void threadIndex.incoming(event).catch(onError);
   const attempt=async count=>{
    if(closed){jobs.delete(id);return;}
    try{
@@ -89,15 +100,17 @@ function createNotificationWorker({db,messaging,now=Date.now,onError=()=>{},retr
  function addOwner(snapshot){
   const owner=snapshot.key;if(owners.has(owner))return;
   const peers=new Map();const off=listen(db.ref('conversations/'+owner),'value',snap=>{
+   threadIndex?.threads(owner,snap.val()||{});
    const ids=new Set(Object.keys(snap.val()||{}));
    for(const [peer,dispose]of peers)if(!ids.has(peer)){dispose();peers.delete(peer);}
    for(const peer of ids)if(!peers.has(peer)){
     const seen=new Set();peers.set(peer,listen(db.ref(`messages/${owner}/${peer}`).limitToLast(100),'value',messages=>{
+     threadIndex?.messages(owner,peer,messages.val()||{});
      for(const [id,m]of Object.entries(messages.val()||{})){
       if(seen.has(id))continue;seen.add(id);
       // Process the recipient copy only. This covers new owners/peers and rapid messages.
       if(!m||m.senderId!==peer||m.deleted||!Number.isFinite(m.createdAt)||m.createdAt<boot-60000)continue;
-      stats.messagesProcessed++;enqueue({type:'message',recipient:owner,sender:peer,id,text:m.text,createdAt:m.createdAt});
+      const event={type:'message',recipient:owner,sender:peer,id,text:m.text,createdAt:m.createdAt};stats.messagesProcessed++;enqueue(event);
      }
      if(seen.size>300){const keep=new Set(Object.keys(messages.val()||{}));for(const id of seen)if(!keep.has(id))seen.delete(id);}
     }));
@@ -114,7 +127,7 @@ function createNotificationWorker({db,messaging,now=Date.now,onError=()=>{},retr
  }
  let signals=new Map();
  offs.push(listen(db.ref('conversations'),'child_added',addOwner));
- offs.push(listen(db.ref('conversations'),'child_removed',s=>{owners.get(s.key)?.();owners.delete(s.key);}));
+ offs.push(listen(db.ref('conversations'),'child_removed',s=>{owners.get(s.key)?.();owners.delete(s.key);threadIndex?.removeOwner(s.key);}));
  offs.push(listen(db.ref('friendRequests'),'child_added',addRequests));
  offs.push(listen(db.ref('friendRequests'),'child_removed',s=>{requestOffs.get(s.key)?.();requestOffs.delete(s.key);}));
  offs.push(listen(db.ref('emergencySignals'),'value',snap=>{
