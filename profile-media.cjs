@@ -55,7 +55,7 @@ function createProfileMedia({auth,db,storage,now=Date.now}){
  };
 }
 async function pruneProfileMedia({db,storage,uid,now=Date.now,deleteAll=false}){
- if(!storage)return;
+ if(!storage){if(deleteAll)throw Error('Photo storage is unavailable; account cleanup must retry.');return;}
  if(deleteAll&&!(await db.ref('deletionRequests/'+uid).get()).exists())throw Error('Account deletion was not requested.');
  const records=(await db.ref('mediaAssets/'+uid).get()).val()||{};
  const active=deleteAll?[]:await Promise.all(['avatarUrl','coverUrl'].map(key=>db.ref('profiles/'+uid+'/'+key).get().then(s=>s.val())));

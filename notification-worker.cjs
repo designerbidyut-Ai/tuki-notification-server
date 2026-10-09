@@ -19,16 +19,27 @@ const stopGeo=require('./public-geo-index.cjs').startPublicGeoIndex({db:database
 const {createCloudinaryMedia,createProfileMedia,startMediaSweep}=require('./profile-media.cjs');
 const mediaStorage=createCloudinaryMedia({cloudName:process.env.CLOUDINARY_CLOUD_NAME,apiKey:process.env.CLOUDINARY_API_KEY,apiSecret:process.env.CLOUDINARY_API_SECRET});
 const stopMediaSweep=startMediaSweep({db:database,storage:mediaStorage,onError:fail});
+const stopCircles=require('./circle-summaries.cjs').startCircleSummaries({db:database,onError:fail});
+const {pruneProfileMedia}=require('./profile-media.cjs');
+const {startAccountJobs,createDeletionRequest}=require('./account-jobs.cjs');
+const stopAccounts=mediaStorage?startAccountJobs({db:database,auth:admin.auth(),deleteAccount:require('./account-cleanup.cjs').deleteAccount,deleteMedia:uid=>pruneProfileMedia({db:database,storage:mediaStorage,uid,deleteAll:true}),onError:fail}):()=>{};
+const moderation=require('./moderation.cjs').createModeration({db:database,auth:admin.auth(),email:process.env.TUKI_MODERATOR_EMAIL||'designer.bidyut@gmail.com'});
+const stopReports=require('./moderation.cjs').startReportIndex({db:database,onError:fail});
 worker.stats.followersSynced=0;
 const stopFollowers=startFollowersSync({db:database,onSynced:()=>worker.stats.followersSynced++,onError:e=>{worker.stats.errors++;fail(e);}});
 let connected=false;
 const connection=database.ref('.info/connected'),onConnection=snapshot=>{connected=snapshot.val()===true;};
 connection.on('value',onConnection,fail);
 const app=express(),startedAt=new Date().toISOString();
-app.get('/',(_req,res)=>res.json({service:'tuki-notification-worker',version:'notification-world-ready-2026-10-08',status:connected?'online':'disconnected',connected,startedAt,features:{publicGeoIndex:true,threadSummaries:true,profileMedia:!!mediaStorage},stats:worker.stats,pending:worker.pendingCount()}));
+const allowedOrigins=new Set(['https://tuki-location.web.app','https://tuki-location.firebaseapp.com']);
+app.use((req,res,next)=>{const origin=req.get('origin');if(allowedOrigins.has(origin)){res.set('Access-Control-Allow-Origin',origin);res.set('Vary','Origin');res.set('Access-Control-Allow-Headers','Authorization,Content-Type');res.set('Access-Control-Allow-Methods','GET,POST,OPTIONS');if(req.method==='OPTIONS')return res.sendStatus(204);}next();});
+app.get('/',(_req,res)=>res.json({service:'tuki-notification-worker',version:'notification-reliability-2026-10-09',status:connected?'online':'disconnected',connected,startedAt,features:{publicGeoIndex:true,threadSummaries:true,profileMedia:!!mediaStorage,circleSummaries:true,accountDeletion:!!mediaStorage,moderation:true},stats:worker.stats,pending:worker.pendingCount()}));
 app.get('/health',(_req,res)=>res.status(connected?200:503).json({status:connected?'online':'disconnected',connected,pending:worker.pendingCount(),errors:worker.stats.errors}));
 app.post('/profile-media',express.json({limit:'320kb'}),createProfileMedia({auth:admin.auth(),db:database,storage:mediaStorage}));
 app.post('/message-wake',express.json({limit:'2kb'}),createMessageWake({auth:admin.auth(),db:database,worker}));
+app.post('/account-deletion',express.json({limit:'2kb'}),mediaStorage?createDeletionRequest({auth:admin.auth(),db:database}):(_req,res)=>res.status(503).json({error:'Account cleanup is temporarily unavailable. Please retry.'}));
+app.get('/admin/reports',moderation.list);
+app.post('/admin/reports/review',express.json({limit:'2kb'}),moderation.review);
 const server=app.listen(Number(process.env.TUKI_WORKER_PORT||process.env.PORT||3000),process.env.TUKI_WORKER_HOST||'0.0.0.0',()=>console.log('Tuki notification worker running; chat, friend requests and SOS enabled.'));
-function stop(){worker.stop();threadIndex.stop();stopGeo();stopFollowers();stopMediaSweep();connection.off('value',onConnection);server.close();void admin.app().delete().finally(()=>process.exit(0));}
+  function stop(){worker.stop();threadIndex.stop();stopGeo();stopFollowers();stopMediaSweep();stopCircles();stopAccounts();stopReports();connection.off('value',onConnection);server.close();void admin.app().delete().finally(()=>process.exit(0));}
 process.on('SIGINT',stop);process.on('SIGTERM',stop);

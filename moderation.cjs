@@ -1,0 +1,21 @@
+const valid=value=>typeof value==='string'&&value.length>0&&value.length<=200&&!/[.#$\[\]/\u0000-\u001f]/.test(value);
+function startReportIndex({db,onError=()=>{}}){
+ const owners=new Map();let closed=false;
+ function receive(s){if(closed)return;const uid=s.key,next=new Set(Object.keys(s.val()||{})),previous=owners.get(uid)||new Set(),changes={};
+  for(const id of next)if(!previous.has(id)&&valid(uid)&&valid(id))changes['reportInbox/'+id+':'+uid]={reporterId:uid,id};
+  for(const id of previous)if(!next.has(id))changes['reportInbox/'+id+':'+uid]=null;
+  owners.set(uid,next);if(Object.keys(changes).length)void db.ref().update(changes).catch(onError);
+ }
+ const root=db.ref('reports'),remove=s=>receive({key:s.key,val:()=>null});root.on('child_added',receive,onError);root.on('child_changed',receive,onError);root.on('child_removed',remove,onError);
+ return()=>{closed=true;root.off('child_added',receive);root.off('child_changed',receive);root.off('child_removed',remove);owners.clear();};
+}
+function createModeration({db,auth,email,now=Date.now}){
+ const limits=new Map();
+ async function authorized(req,res){const bearer=/^Bearer (\S+)$/.exec(req.get('authorization')||'');if(!bearer){res.status(401).json({error:'Sign in.'});return null;}try{const token=await auth.verifyIdToken(bearer[1],true);if(token.email?.toLowerCase()!==email.toLowerCase()||token.email_verified!==true||token.firebase?.sign_in_provider!=='google.com')throw Error();const last=limits.get(token.uid)||0;if(now()-last<1000){res.status(429).json({error:'Please wait before retrying.'});return null;}limits.set(token.uid,now());while(limits.size>10)limits.delete(limits.keys().next().value);return token;}catch{res.status(403).json({error:'Moderator access required.'});return null;}}
+ async function attached(reporterId,report){if(!report.messageId||![reporterId,report.targetId,report.messageId].every(valid)||report.circleId&&!valid(report.circleId))return null;const route=report.circleId?'circleMessages/'+report.circleId+'/'+report.messageId:'messages/'+reporterId+'/'+report.targetId+'/'+report.messageId;const message=(await db.ref(route).get()).val();return message&&message.senderId===report.targetId?{route,message}:null;}
+ return {
+  list:async(req,res)=>{if(!await authorized(req,res))return;try{const cursor=String(req.query?.cursor||'');if(cursor&&!valid(cursor))return res.status(400).json({error:'Invalid cursor.'});let query=db.ref('reportInbox').orderByKey().limitToFirst(21);if(cursor)query=query.startAfter(cursor);const entries=Object.entries((await query.get()).val()||{}),rows=[];for(const[,entry]of entries.slice(0,20)){if(!valid(entry.reporterId)||!valid(entry.id))continue;const value=(await db.ref('reports/'+entry.reporterId+'/'+entry.id).get()).val();if(!value)continue;const review=(await db.ref('reportReviews/'+entry.reporterId+'/'+entry.id).get()).val(),context=await attached(entry.reporterId,value);rows.push({...value,reporterId:entry.reporterId,id:entry.id,review:review||null,message:context?{text:String(context.message.text||'').slice(0,2000),createdAt:context.message.createdAt}:null});}return res.json({rows,nextCursor:entries.length>20?entries[19][0]:null});}catch{return res.status(503).json({error:'Reports unavailable. Retry.'});}},
+  review:async(req,res)=>{const token=await authorized(req,res);if(!token)return;const {reporterId,id,action,note}=req.body||{};if(![reporterId,id].every(valid)||!['reviewed','dismissed','remove_message'].includes(action)||typeof note!=='string'||note.length>500)return res.status(400).json({error:'Invalid review.'});try{const report=(await db.ref('reports/'+reporterId+'/'+id).get()).val();if(!report)return res.status(404).json({error:'Report unavailable.'});if(action==='remove_message'){const context=await attached(reporterId,report);if(!context)throw Error('Message unavailable.');const changes={[context.route]:null};if(!report.circleId)changes['messages/'+report.targetId+'/'+reporterId+'/'+report.messageId]=null;await db.ref().update(changes);}await db.ref('reportReviews/'+reporterId+'/'+id).set({action,note:note.trim(),reviewer:token.uid,at:now()});return res.json({saved:true});}catch{return res.status(409).json({error:'Could not complete this action. Refresh the report.'});}},
+ };
+}
+module.exports={createModeration,startReportIndex};
