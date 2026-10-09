@@ -3,7 +3,7 @@ function startCircleSummaries({db,onError=()=>{}}){
  function listen(ref,receive){ref.on('value',receive,onError);return()=>ref.off('value',receive);}
  function add(snapshot){const id=snapshot.key,g=snapshot.val();if(closed||!g?.members)return;
   let state=groups.get(id);if(!state){state={members:{},messages:[],reads:{},hidden:new Map(),memberStops:new Map(),stops:[],busy:false,dirty:false};groups.set(id,state);
-   state.stops.push(listen(db.ref('circleMessages/'+id).limitToLast(100),s=>{state.messages=Object.entries(s.val()||{}).filter(([,m])=>m&&typeof m.text==='string'&&Number.isFinite(m.createdAt)).map(([key,m])=>({...m,id:key,text:m.text.slice(0,160)})).sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id));state.messagesReady=true;void write(id,state);}));
+   state.stops.push(listen(db.ref('circleMessages/'+id).orderByChild('createdAt').limitToLast(100),s=>{state.messages=Object.entries(s.val()||{}).filter(([,m])=>m&&typeof m.text==='string'&&Number.isFinite(m.createdAt)).map(([key,m])=>({...m,id:key,text:m.text.slice(0,160)})).sort((a,b)=>a.createdAt-b.createdAt||(a.id<b.id?-1:a.id>b.id?1:0));state.messagesReady=true;void write(id,state);}));
    state.stops.push(listen(db.ref('circleReads/'+id),s=>{state.reads=s.val()||{};state.readsReady=true;void write(id,state);}));
   }
   state.members=g.members;

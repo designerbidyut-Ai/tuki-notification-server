@@ -13,7 +13,7 @@ function fakeDatabase(initial={}){
  }
  const snap=(path,val,key=path.split('/').at(-1))=>({key,val:()=>clone(val),exists:()=>val!=null});
  function ref(path){return {
-  child:s=>ref(path+'/'+s),get:async()=>{reads.push(path);return snap(path,value(path));},limitToLast:()=>ref(path),set:async val=>data.set(path,val),remove:async()=>data.set(path,null),
+  child:s=>ref(path+'/'+s),get:async()=>{reads.push(path);return snap(path,value(path));},orderByChild:()=>ref(path),limitToLast:()=>ref(path),set:async val=>data.set(path,val),remove:async()=>data.set(path,null),
   update:async fields=>{for(const[k,v]of Object.entries(fields))data.set(path+'/'+k,v);},
   transaction:async fn=>{const next=fn(value(path));if(next===undefined)return {committed:false};data.set(path,next);return {committed:true,snapshot:snap(path,next)};},
   on(event,callback){const key=path+':'+event;const list=listeners.get(key)||[];list.push(callback);listeners.set(key,list);queueMicrotask(()=>{if(!list.includes(callback))return;const val=value(path);if(event==='value')callback(snap(path,val));else if(event==='child_added')for(const[k,v]of Object.entries(val||{}))callback(snap(path,v,k));});},

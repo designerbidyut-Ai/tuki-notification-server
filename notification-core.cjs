@@ -104,7 +104,7 @@ function createNotificationWorker({db,messaging,now=Date.now,onError=()=>{},retr
    const ids=new Set(Object.keys(snap.val()||{}));
    for(const [peer,dispose]of peers)if(!ids.has(peer)){dispose();peers.delete(peer);}
    for(const peer of ids)if(!peers.has(peer)){
-    const seen=new Set();peers.set(peer,listen(db.ref(`messages/${owner}/${peer}`).limitToLast(100),'value',messages=>{
+    const seen=new Set();peers.set(peer,listen(db.ref(`messages/${owner}/${peer}`).orderByChild('createdAt').limitToLast(100),'value',messages=>{
      threadIndex?.messages(owner,peer,messages.val()||{});
      for(const [id,m]of Object.entries(messages.val()||{})){
       if(seen.has(id))continue;seen.add(id);
