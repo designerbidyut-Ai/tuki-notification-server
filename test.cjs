@@ -3,6 +3,7 @@ const {createNotificationDispatcher,createNotificationWorker}=require('./notific
 const clone=v=>v==null?v:JSON.parse(JSON.stringify(v));
 function fakeDatabase(initial={}){
  const data=new Map(Object.entries(initial)),listeners=new Map(),reads=[];
+ const store=(path,val)=>{for(const key of data.keys())if(key.startsWith(path+'/'))data.delete(key);data.set(path,val);};
  function value(path){
   let result=null;
   for(const [key,val]of [...data].sort((a,b)=>a[0].length-b[0].length)){
@@ -13,13 +14,13 @@ function fakeDatabase(initial={}){
  }
  const snap=(path,val,key=path.split('/').at(-1))=>({key,val:()=>clone(val),exists:()=>val!=null});
  function ref(path){return {
-  child:s=>ref(path+'/'+s),get:async()=>{reads.push(path);return snap(path,value(path));},orderByChild:()=>ref(path),limitToLast:()=>ref(path),set:async val=>data.set(path,val),remove:async()=>data.set(path,null),
-  update:async fields=>{for(const[k,v]of Object.entries(fields))data.set(path+'/'+k,v);},
-  transaction:async fn=>{const next=fn(value(path));if(next===undefined)return {committed:false};data.set(path,next);return {committed:true,snapshot:snap(path,next)};},
+  child:s=>ref(path+'/'+s),get:async()=>{reads.push(path);return snap(path,value(path));},orderByChild:()=>ref(path),endAt:()=>ref(path),limitToFirst:()=>ref(path),limitToLast:()=>ref(path),set:async val=>store(path,val),remove:async()=>store(path,null),
+  update:async fields=>{for(const[k,v]of Object.entries(fields))store(path+'/'+k,v);},
+  transaction:async fn=>{const next=fn(value(path));if(next===undefined)return {committed:false};store(path,next);return {committed:true,snapshot:snap(path,next)};},
   on(event,callback){const key=path+':'+event;const list=listeners.get(key)||[];list.push(callback);listeners.set(key,list);queueMicrotask(()=>{if(!list.includes(callback))return;const val=value(path);if(event==='value')callback(snap(path,val));else if(event==='child_added')for(const[k,v]of Object.entries(val||{}))callback(snap(path,v,k));});},
   off(event,callback){const list=listeners.get(path+':'+event)||[];const i=list.indexOf(callback);if(i>=0)list.splice(i,1);},
  };}
- return {ref,value,reads,set:(path,val)=>data.set(path,val),emit(path,event,val,key){if(event==='value')data.set(path,val);for(const fn of listeners.get(path+':'+event)||[])fn(snap(path,val,key));}};
+ return {ref,value,reads,set:store,emit(path,event,val,key){if(event==='value')store(path,val);for(const fn of listeners.get(path+':'+event)||[])fn(snap(path,val,key));}};
 }
 const settle=async()=>{for(let i=0;i<20;i++)await new Promise(setImmediate);};
 test('follower changes use the durable per-owner index instead of repeated global downloads',async()=>{
@@ -111,4 +112,85 @@ test('old history is not replayed; a cancelled then renewed friend request can a
  const s=setup({'conversations':{bob:{alice:1}},'messages/bob/alice/m1':{senderId:'alice',text:'Old',createdAt:1},'friendRequests':{bob:{alice:1}}});const worker=createNotificationWorker({db:s.db,messaging:s.messaging,now:()=>s.time});await settle();assert.equal(s.sent.length,0);
  s.db.emit('friendRequests/bob','value',{alice:s.time});await settle();assert.equal(s.sent.length,1);
  s.db.emit('friendRequests/bob','value',{});s.db.emit('friendRequests/bob','value',{alice:s.time+1});await settle();assert.equal(s.sent.length,2);worker.stop();
+});
+
+test('restart after 90 seconds catches unread messages, friend requests and active SOS exactly once',async()=>{
+ for(const type of ['message','friend','emergency']){
+  const at=1700000000000;
+  const data=type==='message'?{conversations:{bob:{alice:at}}}:type==='friend'?{friendRequests:{bob:{alice:at}}}:{emergencySignals:{alice:{startedAt:at}},friends:{alice:{bob:true},bob:{alice:true}}};
+  const s=setup(data),options={db:s.db,messaging:s.messaging,now:()=>at+90000};
+  let worker=createNotificationWorker(options);await settle();assert.equal(s.sent.length,1,type);if(type==='emergency')assert.equal(s.sent[0].android.ttl,210000);worker.stop();
+  worker=createNotificationWorker(options);await settle();assert.equal(s.sent.length,1,type+' must not replay');worker.stop();
+ }
+});
+
+test('expired, read, blocked and cancelled events do not become alerts after restart',async()=>{
+ const at=1700000000000;
+ for(const extra of [{'chatReads/bob/alice':at},{'blocks/bob/alice':true},{'messages/bob/alice/m1':null},{'deletionRequests/bob':{status:'pending'}}]){
+  const s=setup({conversations:{bob:{alice:at}},...extra});const worker=createNotificationWorker({db:s.db,messaging:s.messaging,now:()=>at+90000});await settle();assert.equal(s.sent.length,0);worker.stop();
+ }
+ const s=setup({conversations:{bob:{alice:at}},emergencySignals:{alice:{startedAt:at}},friends:{alice:{bob:true},bob:{alice:true}}});
+ const worker=createNotificationWorker({db:s.db,messaging:s.messaging,now:()=>at+3600001});await settle();assert.equal(s.sent.length,0);worker.stop();
+});
+
+test('circle pushes carry circle routing and canonical text; same message ID in another circle is distinct',async()=>{
+ const at=1700000000000,m={senderId:'alice',text:'Canonical circle message',createdAt:at};
+ const s=setup({circles:{family:{name:'Family',members:{alice:true,bob:true}},team:{name:'Team',members:{alice:true,bob:true}}},circleMessages:{family:{same:m},team:{same:m}}});
+ const worker=createNotificationWorker({db:s.db,messaging:s.messaging,now:()=>at+90000});await settle();assert.equal(s.sent.length,2);
+ assert.deepEqual(s.sent.map(p=>p.data.circleId).sort(),['family','team']);assert.equal(s.sent[0].data.type,'circle');assert.equal(s.sent[0].data.ownerId,'bob');assert.equal(s.sent[0].data.threadId,s.sent[0].data.circleId);assert.equal(s.sent[0].notification.body,m.text);worker.stop();
+ const again=createNotificationWorker({db:s.db,messaging:s.messaging,now:()=>at+90000});await settle();assert.equal(s.sent.length,2);again.stop();
+});
+
+test('circle push rechecks membership, read, hidden, blocks and sender authenticity',async()=>{
+ const at=1700000000000,event={type:'circle',circleId:'family',recipient:'bob',sender:'alice',id:'m',createdAt:at,text:'Forged client text'};
+ for(const extra of [
+  {'circles/family/members/bob':null},{'circles/family/members/alice':null},
+  {'circleReads/family/bob':at},{'circleHidden/bob/family/m':true},{'blocks/alice/bob':true},
+  {'circleMessages/family/m':null},{'circleMessages/family/m/senderId':'mallory'},
+  {'circleMessages/family/m/createdAt':at+1},{'deletionRequests/alice':{}}
+ ]){
+  const s=setup({'circles/family':{name:'Family',members:{alice:true,bob:true}},'circleMessages/family/m':{senderId:'alice',text:'Hello',createdAt:at},...extra});
+  await s.dispatcher.deliver(event);assert.equal(s.sent.length,0,JSON.stringify(extra));
+ }
+});
+
+test('durable retry survives worker loss without a conversation listener and stores no message body',async()=>{
+ const {createNotificationQueue}=require('./notification-queue.cjs');const {eventKey}=require('./notification-policy.cjs');
+ const s=setup();let at=s.time;
+ const q=createNotificationQueue({db:s.db,deliver:async()=>{throw Error('FCM offline');},now:()=>at,retryMs:50000});
+ await q.enqueue(s.event);await settle();const key=eventKey(s.event),saved=s.db.value('notificationPending/'+key);
+ assert.ok(saved.event);assert.equal(saved.event.text,undefined);assert.equal(saved.event.recipient,'bob');q.stop();
+ at+=60000;const next=createNotificationQueue({db:s.db,deliver:createNotificationDispatcher({db:s.db,messaging:s.messaging,now:()=>at}).deliver,now:()=>at});
+ await settle();assert.equal(s.sent.length,1);assert.equal(s.db.value('notificationPending/'+key),null);next.stop();
+});
+
+test('retry after no token does not send a cancelled SOS or expired message',async()=>{
+ const {createNotificationQueue}=require('./notification-queue.cjs'),{eventKey}=require('./notification-policy.cjs');
+ for(const type of ['message','emergency']){
+  const s=setup({'pushTokens/bob':null,'friends/alice/bob':true,'friends/bob/alice':true,'emergencySignals/alice/startedAt':1700000000000});let at=s.time;
+  const event=type==='message'?s.event:{type,recipient:'bob',sender:'alice',id:String(at),startedAt:at};
+  const dispatcher=createNotificationDispatcher({db:s.db,messaging:s.messaging,now:()=>at});
+  const first=createNotificationQueue({db:s.db,deliver:dispatcher.deliver,now:()=>at,retryMs:50000});await first.enqueue(event);await settle();first.stop();
+  s.db.set('pushTokens/bob',{phone:'token-bob'});if(type==='emergency')s.db.set('emergencySignals/alice/startedAt',null);
+  at+=type==='emergency'?60000:3600001;
+  const next=createNotificationQueue({db:s.db,deliver:dispatcher.deliver,now:()=>at});await settle();assert.equal(s.sent.length,0);assert.equal(s.db.value('notificationPending/'+eventKey(event)),null);next.stop();
+ }
+});
+
+test('durable queue bounds concurrent dispatch and leaves deferred records on stop',async()=>{
+ const {createNotificationQueue}=require('./notification-queue.cjs');const s=setup(),releases=[];let active=0,maximum=0;
+ const q=createNotificationQueue({db:s.db,now:()=>s.time,deliver:()=>new Promise(resolve=>{active++;maximum=Math.max(maximum,active);releases.push(()=>{active--;resolve({status:'done',sent:1});});})});
+ for(let i=0;i<10;i++)await q.enqueue({...s.event,id:'m'+i});await settle();assert.equal(maximum,4);assert.equal(releases.length,4);
+ q.stop();for(const release of releases)release();await settle();assert.equal(releases.length,4);assert.ok(Object.keys(s.db.value('notificationPending')).length>=6);
+});
+
+test('authenticated wake supports Circle, friend and SOS references and rejects forged circle sender',async()=>{
+ const at=1700000000000,s=setup({'circles/family':{members:{alice:true,bob:true}},'circleMessages/family/m':{senderId:'alice',text:'Hello',createdAt:at},'friendRequests/bob/alice':at,'emergencySignals/alice/startedAt':at,'friends/alice/bob':true});
+ const events=[];const handler=require('./message-wake.cjs').createMessageWake({auth:{verifyIdToken:async(token,revoked)=>{assert.equal(revoked,true);return{uid:token};}},db:s.db,worker:{enqueue:async event=>events.push(event)},now:()=>at+90000});
+ const call=async(body,uid='alice')=>{let status;return handler({body,get:()=> 'Bearer '+uid},{status(code){status=code;return this;},json(){return status;}});};
+ assert.equal(await call({type:'circle',circleId:'family',messageId:'m'}),202);assert.equal(events[0].recipient,'bob');assert.equal(events[0].text,undefined);
+ assert.equal(await call({type:'circle',circleId:'family',messageId:'m'},'mallory'),404);
+ assert.equal(await call({type:'friend',recipient:'bob'}),202);assert.equal(events[1].type,'friend');
+ assert.equal(await call({type:'emergency'}),202);assert.equal(events[2].type,'emergency');
+ s.db.set('emergencySignals/alice/startedAt',null);assert.equal(await call({type:'emergency'}),404);
 });

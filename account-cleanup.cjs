@@ -5,9 +5,10 @@ const mirrored=['contacts','shares','incoming','messages','conversations','frien
 const scans=[...mirrored,'handles','notifications','shopComments','messageReactions','reports','circles','circleMessages','circleSharing','circleLocations','emergencyCircleSignals','circleInviteTokens'];
 ownCollections.push('threadSummaries','threadIndexReady','messageInbox','mediaAssets','mediaUploadRate','reportReviews');
 mirrored.push('threadSummaries');
-scans.push('threadSummaries','messageInbox','circleSummaries','circleReads','reportInbox');
+scans.push('threadSummaries','messageInbox','circleSummaries','circleReads','reportInbox','notificationPending');
 function removalFor(collection,owner,value,uid){
  const changes={},base=collection+'/'+owner;
+ if(collection==='notificationPending'){if(value?.event?.sender===uid||value?.event?.recipient===uid)changes[base]=null;return changes;}
  if(collection==='reportInbox'){if(value?.reporterId===uid)changes[base]=null;return changes;}
  if(collection==='circleSummaries'||collection==='circleReads'){if(value?.[uid])changes[base+'/'+uid]=null;return changes;}
  if(collection==='circles'){if(value?.ownerId===uid){changes[base]=null;changes['circleMessages/'+owner]=null;changes['circleInviteConfig/'+owner]=null;changes['emergencyCircleSignals/'+owner]=null;changes['circleSharing/'+owner]=null;changes['circleLocations/'+owner]=null;changes['circleSummaries/'+owner]=null;changes['circleIndexReady/'+owner]=null;changes['circleReads/'+owner]=null;for(const member of Object.keys(value.members||{}))changes['circleMemberships/'+member+'/'+owner]=null;}else if(value?.members?.[uid]){changes[base+'/members/'+uid]=null;changes[base+'/admins/'+uid]=null;changes['circleSharing/'+owner+'/'+uid]=null;changes['circleLocations/'+owner+'/'+uid]=null;changes['circleSummaries/'+owner+'/'+uid]=null;changes['circleReads/'+owner+'/'+uid]=null;}}
