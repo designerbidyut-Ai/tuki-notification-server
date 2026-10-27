@@ -3,7 +3,7 @@
 const ownCollections=['profiles','contacts','shares','incoming','liveLocations','publicLocations','visibility','presence','messages','conversations','notifications','pushTokens','shops','shopLikes','shopComments','shopMap','friendRequests','friendSent','friends','following','followers','sharingSettings','chatReads','chatDelivered','blocks','reportRate','reports','nearbyScans','privateProfileContacts','chatSaved','circleMemberships','circleHidden','emergencySignals','circleJoinClaims','followerSyncState'];
 const mirrored=['contacts','shares','incoming','messages','conversations','friendRequests','friendSent','friends','following','followers','chatReads','chatDelivered','blocks','shopLikes'];
 const scans=[...mirrored,'handles','notifications','shopComments','messageReactions','reports','circles','circleMessages','circleSharing','circleLocations','emergencyCircleSignals','circleInviteTokens'];
-ownCollections.push('threadSummaries','threadIndexReady','messageInbox','mediaAssets','mediaUploadRate','reportReviews');
+ownCollections.push('trackingDiagnostics','threadSummaries','threadIndexReady','messageInbox','mediaAssets','mediaUploadRate','reportReviews');
 mirrored.push('threadSummaries');
 scans.push('threadSummaries','messageInbox','circleSummaries','circleReads','reportInbox','notificationPending');
 function removalFor(collection,owner,value,uid){
