@@ -25,6 +25,8 @@ function createLocationRefresh({auth,db,messaging,now=Date.now}){
   if(!validId(viewer)||viewer===recipient)return res.status(400).json({error:'Invalid person'});
   try{
    if(!await allowed(viewer,recipient,circleId))return res.status(403).json({error:'Location is not shared'});
+   const capability=await read('trackingDiagnostics/'+recipient+'/native');
+   if(capability?.schema!==1||capability.source!=='native'||!/^android-build-[1-9][0-9]*$/.test(capability.runtime||''))return res.status(409).json({error:'Phone update required'});
    const devices=await read('pushTokens/'+recipient);
    const tokens=[...new Set(Object.values(devices||{}).filter(token=>typeof token==='string'&&token.length>0))].slice(0,20);
    if(!tokens.length)return res.status(409).json({error:'Phone unavailable'});

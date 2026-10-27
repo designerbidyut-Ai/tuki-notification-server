@@ -1,7 +1,7 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const {createLocationRefresh}=require('./location-refresh.cjs');
 function setup(extra={}){
- const values={'visibility/alice':'public','visibility/bob':'public','pushTokens/bob':{phone:'test-token'},...extra},sent=[];let time=1700000000000,afterLease=null;
+ const values={'visibility/alice':'public','visibility/bob':'public','trackingDiagnostics/bob/native':{schema:1,source:'native',runtime:'android-build-16'},'pushTokens/bob':{phone:'test-token'},...extra},sent=[];let time=1700000000000,afterLease=null;
  const db={ref:path=>({get:async()=>({val:()=>values[path]??null}),transaction:async fn=>{const next=fn(values[path]??null);if(next===undefined)return{committed:false};values[path]=next;afterLease?.();return{committed:true};}})};
  const handler=createLocationRefresh({auth:{verifyIdToken:async token=>{if(token!=='test-auth')throw Error('invalid');return{uid:'alice'};}},db,messaging:{sendEachForMulticast:async data=>{sent.push(data);return{responses:[{success:true}]};}},now:()=>time});
  return {values,sent,advance:ms=>time+=ms,afterLease:fn=>afterLease=fn,call:async(body={recipient:'bob'},token='test-auth')=>{let status=200,result;await handler({body,get:()=>token?'Bearer '+token:''},{set(){},status(code){status=code;return this;},json(body){result=body;}});return {status,result};}};
@@ -25,3 +25,4 @@ test('repeated refresh is throttled and privacy is rechecked immediately before 
  const revoked=setup();revoked.afterLease(()=>revoked.values['blocks/bob/alice']=true);assert.equal((await revoked.call()).status,403);assert.equal(revoked.sent.length,0);
 });
 test('missing device tokens are reported unavailable without claiming freshness',async()=>{const s=setup({'pushTokens/bob':null});assert.equal((await s.call()).status,409);assert.equal(s.sent.length,0);});
+test('old phones without a native receiver are never sent silent high-priority refreshes',async()=>{for(const value of [null,{schema:1,source:'app',runtime:'android-build-16'}]){const s=setup({'trackingDiagnostics/bob/native':value});assert.equal((await s.call()).status,409);assert.equal(s.sent.length,0);}});
