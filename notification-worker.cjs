@@ -2,6 +2,7 @@ const fs=require('node:fs'),path=require('node:path'),admin=require('firebase-ad
 const {createNotificationWorker}=require('./notification-core.cjs');
 const {startFollowersSync}=require('./followers-sync.cjs');
 const {createMessageWake}=require('./message-wake.cjs');
+const {createLocationRefresh}=require('./location-refresh.cjs');
 function credential(){
  if(process.env.FIREBASE_SERVICE_ACCOUNT){
   const raw=process.env.FIREBASE_SERVICE_ACCOUNT.trim();
@@ -33,10 +34,11 @@ connection.on('value',onConnection,fail);
 const app=express(),startedAt=new Date().toISOString();
 const allowedOrigins=new Set(['https://tuki-location.web.app','https://tuki-location.firebaseapp.com']);
 app.use((req,res,next)=>{const origin=req.get('origin');if(allowedOrigins.has(origin)){res.set('Access-Control-Allow-Origin',origin);res.set('Vary','Origin');res.set('Access-Control-Allow-Headers','Authorization,Content-Type');res.set('Access-Control-Allow-Methods','GET,POST,OPTIONS');if(req.method==='OPTIONS')return res.sendStatus(204);}next();});
-app.get('/',(_req,res)=>res.json({service:'tuki-notification-worker',version:'tracking-diagnostics-2026-10-27',commit:process.env.RENDER_GIT_COMMIT||null,status:connected?'online':'disconnected',connected,startedAt,features:{privateTrackingDiagnosticsCleanup:true,publicGeoIndex:true,threadSummaries:true,profileMedia:!!mediaStorage,circleSummaries:true,circleNotifications:true,durableNotificationRetry:true,accountDeletion:!!mediaStorage,moderation:true},stats:worker.stats,pending:worker.pendingCount()}));
+app.get('/',(_req,res)=>res.json({service:'tuki-notification-worker',version:'tracking-diagnostics-2026-10-27',commit:process.env.RENDER_GIT_COMMIT||null,status:connected?'online':'disconnected',connected,startedAt,features:{privateTrackingDiagnosticsCleanup:true,publicGeoIndex:true,threadSummaries:true,profileMedia:!!mediaStorage,circleSummaries:true,circleNotifications:true,durableNotificationRetry:true,locationRefresh:true,accountDeletion:!!mediaStorage,moderation:true},stats:worker.stats,pending:worker.pendingCount()}));
 app.get('/health',(_req,res)=>res.status(connected?200:503).json({status:connected?'online':'disconnected',connected,pending:worker.pendingCount(),errors:worker.stats.errors}));
 app.post('/profile-media',express.json({limit:'320kb'}),createProfileMedia({auth:admin.auth(),db:database,storage:mediaStorage}));
 app.post('/message-wake',express.json({limit:'2kb'}),createMessageWake({auth:admin.auth(),db:database,worker}));
+app.post('/location-refresh',express.json({limit:'2kb'}),createLocationRefresh({auth:admin.auth(),db:database,messaging:admin.messaging()}));
 app.post('/account-deletion',express.json({limit:'2kb'}),mediaStorage?createDeletionRequest({auth:admin.auth(),db:database}):(_req,res)=>res.status(503).json({error:'Account cleanup is temporarily unavailable. Please retry.'}));
 app.get('/admin/reports',moderation.list);
 app.post('/admin/reports/review',express.json({limit:'2kb'}),moderation.review);
