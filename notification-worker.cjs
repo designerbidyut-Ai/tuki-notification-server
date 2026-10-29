@@ -16,6 +16,8 @@ const database=admin.database();
 const fail=e=>console.error('Notification worker error:',e.code||e.name||'unknown');
 const threadIndex=require('./thread-summaries.cjs').createThreadSummaries({db:database,onError:fail});
 const worker=createNotificationWorker({db:database,messaging:admin.messaging(),onError:fail,threadIndex});
+const {createCityMembership,startCityJoins}=require('./city-join.cjs');
+const stopCityJoins=startCityJoins({db:database,worker,onError:fail});
 const stopGeo=require('./public-geo-index.cjs').startPublicGeoIndex({db:database,onError:fail});
 const {createCloudinaryMedia,createProfileMedia,startMediaSweep}=require('./profile-media.cjs');
 const mediaStorage=createCloudinaryMedia({cloudName:process.env.CLOUDINARY_CLOUD_NAME,apiKey:process.env.CLOUDINARY_API_KEY,apiSecret:process.env.CLOUDINARY_API_SECRET});
@@ -34,14 +36,15 @@ connection.on('value',onConnection,fail);
 const app=express(),startedAt=new Date().toISOString();
 const allowedOrigins=new Set(['https://tuki-location.web.app','https://tuki-location.firebaseapp.com']);
 app.use((req,res,next)=>{const origin=req.get('origin');if(allowedOrigins.has(origin)){res.set('Access-Control-Allow-Origin',origin);res.set('Vary','Origin');res.set('Access-Control-Allow-Headers','Authorization,Content-Type');res.set('Access-Control-Allow-Methods','GET,POST,OPTIONS');if(req.method==='OPTIONS')return res.sendStatus(204);}next();});
-app.get('/',(_req,res)=>res.json({service:'tuki-notification-worker',version:'native-health-recovery-2026-10-27',commit:process.env.RENDER_GIT_COMMIT||null,status:connected?'online':'disconnected',connected,startedAt,features:{nativeLocationRefreshGate:true,privateTrackingDiagnosticsCleanup:true,publicGeoIndex:true,threadSummaries:true,profileMedia:!!mediaStorage,circleSummaries:true,circleNotifications:true,durableNotificationRetry:true,locationRefresh:true,accountDeletion:!!mediaStorage,moderation:true},stats:worker.stats,pending:worker.pendingCount()}));
+app.get('/',(_req,res)=>res.json({service:'tuki-notification-worker',version:'build18-services-2026-10-30',commit:process.env.RENDER_GIT_COMMIT||null,status:connected?'online':'disconnected',connected,startedAt,features:{sameCityJoins:true,privateCityAccountCleanup:true,nativeLocationRefreshGate:true,privateTrackingDiagnosticsCleanup:true,publicGeoIndex:true,threadSummaries:true,profileMedia:!!mediaStorage,circleSummaries:true,circleNotifications:true,durableNotificationRetry:true,locationRefresh:true,accountDeletion:!!mediaStorage,moderation:true},stats:worker.stats,pending:worker.pendingCount()}));
 app.get('/health',(_req,res)=>res.status(connected?200:503).json({status:connected?'online':'disconnected',connected,pending:worker.pendingCount(),errors:worker.stats.errors}));
 app.post('/profile-media',express.json({limit:'320kb'}),createProfileMedia({auth:admin.auth(),db:database,storage:mediaStorage}));
 app.post('/message-wake',express.json({limit:'2kb'}),createMessageWake({auth:admin.auth(),db:database,worker}));
 app.post('/location-refresh',express.json({limit:'2kb'}),createLocationRefresh({auth:admin.auth(),db:database,messaging:admin.messaging()}));
+app.post('/city-membership',express.json({limit:'2kb'}),createCityMembership({auth:admin.auth(),db:database}));
 app.post('/account-deletion',express.json({limit:'2kb'}),mediaStorage?createDeletionRequest({auth:admin.auth(),db:database}):(_req,res)=>res.status(503).json({error:'Account cleanup is temporarily unavailable. Please retry.'}));
 app.get('/admin/reports',moderation.list);
 app.post('/admin/reports/review',express.json({limit:'2kb'}),moderation.review);
 const server=app.listen(Number(process.env.TUKI_WORKER_PORT||process.env.PORT||3000),process.env.TUKI_WORKER_HOST||'0.0.0.0',()=>console.log('Tuki notification worker running; chat, friend requests and SOS enabled.'));
-  function stop(){worker.stop();threadIndex.stop();stopGeo();stopFollowers();stopMediaSweep();stopCircles();stopAccounts();stopReports();connection.off('value',onConnection);server.close();void admin.app().delete().finally(()=>process.exit(0));}
+  function stop(){stopCityJoins();worker.stop();threadIndex.stop();stopGeo();stopFollowers();stopMediaSweep();stopCircles();stopAccounts();stopReports();connection.off('value',onConnection);server.close();void admin.app().delete().finally(()=>process.exit(0));}
 process.on('SIGINT',stop);process.on('SIGTERM',stop);

@@ -4,6 +4,7 @@ const ownCollections=['profiles','contacts','shares','incoming','liveLocations',
 const mirrored=['contacts','shares','incoming','messages','conversations','friendRequests','friendSent','friends','following','followers','chatReads','chatDelivered','blocks','shopLikes'];
 const scans=[...mirrored,'handles','notifications','shopComments','messageReactions','reports','circles','circleMessages','circleSharing','circleLocations','emergencyCircleSignals','circleInviteTokens'];
 ownCollections.push('trackingDiagnostics','threadSummaries','threadIndexReady','messageInbox','mediaAssets','mediaUploadRate','reportReviews');
+ownCollections.push('cityMembers','cityJoinDevices','cityJoinEvents','cityJoinBudget');
 mirrored.push('threadSummaries');
 scans.push('threadSummaries','messageInbox','circleSummaries','circleReads','reportInbox','notificationPending');
 function removalFor(collection,owner,value,uid){

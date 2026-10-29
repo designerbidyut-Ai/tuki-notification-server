@@ -1,5 +1,5 @@
 const {createHash}=require('node:crypto');
-const windows={message:3600000,circle:3600000,friend:86400000,emergency:300000};
+const windows={message:3600000,circle:3600000,friend:86400000,emergency:300000,city_join:86400000};
 const validKey=value=>typeof value==='string'&&value.length>0&&value.length<=128&&!/[.#$\[\]/\u0000-\u0020]/.test(value);
 function normalizeEvent(event,now=Date.now()){
  if(!event||!windows[event.type]||!['recipient','sender','id'].every(k=>validKey(event[k]))||event.sender===event.recipient)return null;

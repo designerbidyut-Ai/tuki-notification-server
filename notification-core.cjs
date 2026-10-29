@@ -2,6 +2,7 @@ const {createHash,randomUUID}=require('node:crypto');
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const {normalizeEvent,eventKey,expiresAt}=require('./notification-policy.cjs');
 const {createNotificationQueue}=require('./notification-queue.cjs');
+const {cityEventAllowed,reserveCityBudget}=require('./city-join.cjs');
 
 function createNotificationDispatcher({db,messaging,now=Date.now}){
  const profiles=new Map(),pendingProfiles=new Map();
@@ -19,6 +20,7 @@ function createNotificationDispatcher({db,messaging,now=Date.now}){
   if(!recipient||!sender||recipient===sender)return false;
   const paths=[`blocks/${recipient}/${sender}`,`blocks/${sender}/${recipient}`,`deletionRequests/${recipient}`,`deletionRequests/${sender}`];
   if((await Promise.all(paths.map(p=>db.ref(p).get()))).some(s=>s.exists()))return false;
+  if(type==='city_join')return cityEventAllowed(db,event,now());
   if(type==='message'){
    const [read,message]=await Promise.all([db.ref(`chatReads/${recipient}/${sender}`).get(),db.ref(`messages/${recipient}/${sender}/${event.id}`).get()]);
    const value=message.val();if(read.val()>=createdAt||!value||value.deleted||value.senderId!==sender||value.createdAt!==createdAt)return false;
@@ -38,7 +40,7 @@ function createNotificationDispatcher({db,messaging,now=Date.now}){
   return true;
  }
  async function deliver(input){
-  if(!['message','circle','friend','emergency'].includes(input.type))throw Error('Unsupported notification type');
+  if(!['message','circle','friend','emergency','city_join'].includes(input.type))throw Error('Unsupported notification type');
   const event=normalizeEvent(input,now());if(!event)return {status:'suppressed',sent:0};
   if(!await allowed(event))return {status:'suppressed',sent:0};
   const key=eventKey(event);
@@ -48,15 +50,17 @@ function createNotificationDispatcher({db,messaging,now=Date.now}){
   try{
    const [saved,devices,profile]=await Promise.all([delivery.child('tokens').get(),db.ref('pushTokens/'+event.recipient).get(),senderProfile(event.sender)]);
    const completed=saved.val()||{},tokens=devices.val()||{};
-   const entries=Object.entries(tokens).filter(([,t])=>typeof t==='string'&&!completed[hash(t)]);
+   const cityDevices=event.type==='city_join'?(await db.ref('cityJoinDevices/'+event.recipient).get()).val()||{}:null;
+   const entries=Object.entries(tokens).filter(([device,t])=>typeof t==='string'&&!completed[hash(t)]&&(!cityDevices||cityDevices[device]===hash(t)));
    if(!Object.keys(tokens).length)return {status:'no-tokens',sent:0};
    if(!entries.length)return {status:'done',sent:0};
+   if(event.type==='city_join'&&!await reserveCityBudget(db,event.recipient,key,now()))return {status:'suppressed',sent:0};
    const pVal=profile||{};
    const rawName=typeof pVal==='string'?pVal:(pVal.name||'Your friend');
    const name=String(rawName||'Your friend').trim().slice(0,80)||'Your friend';
    const avatarUrl=typeof pVal.avatarUrl==='string'&&/^https?:\/\//i.test(pVal.avatarUrl)?pVal.avatarUrl:'';
-   const title=event.type==='circle'?event.circleName+' · '+name:event.type==='emergency'?'SOS · '+name:event.type==='friend'?'Friend request · '+name:name;
-   const body=event.type==='emergency'?name+' needs help. Tap to view their location.':event.type==='friend'?name+' wants to connect with you on Tuki.':String(event.text||'New message').slice(0,160);
+   const title=event.type==='city_join'?name+' joined Tuki':event.type==='circle'?event.circleName+' · '+name:event.type==='emergency'?'SOS · '+name:event.type==='friend'?'Friend request · '+name:name;
+   const body=event.type==='city_join'?'New in '+event.city+' · Tap to view profile.':event.type==='emergency'?name+' needs help. Tap to view their location.':event.type==='friend'?name+' wants to connect with you on Tuki.':String(event.text||'New message').slice(0,160);
    const data={type:event.type,senderId:event.sender,ownerId:event.recipient,eventId:key};
    if(event.type==='message'||event.type==='circle'){data.messageId=event.id;data.createdAt=String(event.createdAt);}
    if(event.type==='circle'){data.circleId=event.circleId;data.threadId=event.circleId;}
@@ -66,7 +70,7 @@ function createNotificationDispatcher({db,messaging,now=Date.now}){
    for(let i=0;i<entries.length;i+=500){
     if(!normalizeEvent(event,now())||!await allowed(event))return {status:'suppressed',sent};
     const batch=entries.slice(i,i+500);
-    const result=await messaging.sendEachForMulticast({tokens:batch.map(([,t])=>t),notification:{title,body,...(avatarUrl?{imageUrl:avatarUrl}:{})},data,android:{priority:'high',ttl:Math.max(1,expiresAt(event)-now()),notification:{channelId:event.type==='emergency'?'tuki-sos-v1':'tuki-messages-v1',tag:key,sound:'default',priority:'max',vibrateTimingsMillis:event.type==='emergency'?[0,500,200,500,200,500]:[0,160,100,160],...(avatarUrl?{imageUrl:avatarUrl}:{})}},apns:{headers:{'apns-expiration':String(Math.floor(expiresAt(event)/1000))},payload:{aps:{sound:'default'}},...(avatarUrl?{fcmOptions:{imageUrl:avatarUrl}}:{})}});
+    const result=await messaging.sendEachForMulticast({tokens:batch.map(([,t])=>t),notification:{title,body,...(avatarUrl?{imageUrl:avatarUrl}:{})},data,android:{priority:event.type==='city_join'?'normal':'high',ttl:Math.max(1,expiresAt(event)-now()),notification:{channelId:event.type==='city_join'?'tuki-city-joins-v1':event.type==='emergency'?'tuki-sos-v1':'tuki-messages-v1',tag:key,sound:'default',priority:event.type==='city_join'?'default':'max',vibrateTimingsMillis:event.type==='emergency'?[0,500,200,500,200,500]:[0,160,100,160],...(avatarUrl?{imageUrl:avatarUrl}:{})}},apns:{headers:{'apns-expiration':String(Math.floor(expiresAt(event)/1000))},payload:{aps:{sound:'default'}},...(avatarUrl?{fcmOptions:{imageUrl:avatarUrl}}:{})}});
     const acknowledged={};
     for(let j=0;j<batch.length;j++){
      const response=result.responses[j],[device,token]=batch[j],code=response.error?.code;
